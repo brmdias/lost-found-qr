@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Lost & Found QR stickers. Static finder page on S3+CloudFront,
+  HTTP API + single Lambda, DynamoDB on-demand, SES/SNS notifications.
+
+Parameters:
+  SenderEmail:
+    Type: String
+    Default: no-reply@example.com
+    Description: >
+      Verified SES sender address for owner notifications. Must be a real
+      address you control; SES sends a verification email on first deploy.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+
+Resources:
+
+  ItemsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: item_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: item_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: report_id
+          AttributeType: S
+        - AttributeName: item_id
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: report_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: item_id-index
+          KeySchema:
+            - AttributeName: item_id
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  RateLimitTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - content-type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        MaxAge: 600
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogs.Arn
+        Format: '{"ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status"}'
+
+  ApiAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handler.handler
+      Environment:
+        Variables:
+          ITEMS_TABLE: !Ref ItemsTable
+          REPORTS_TABLE: !Ref ReportsTable
+          RATE_LIMIT_TABLE: !Ref RateLimitTable
+          SENDER_EMAIL: !Ref SenderEmail
+          NOTIFY_EMAIL_ENABLED: 'true'
+          NOTIFY_SMS_ENABLED: 'true'
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt ItemsTable.Arn
+                - !GetAtt ReportsTable.Arn
+                - !GetAtt RateLimitTable.Arn
+            - Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub '${ReportsTable.Arn}/index/item_id-index'
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SenderEmail}'
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: '*'
+      Events:
+        GetItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/item/{item_id}
+            Method: GET
+        Report:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /v1/report
+            Method: POST
+
+  SenderEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref SenderEmail
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-oac'
+        Description: OAC for the static site bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  UrlRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-url-rewrite'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: SPA-style routing, serve index.html for extensionless paths
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) {
+            request.uri = uri + 'index.html';
+          } else if (!uri.split('/').pop().includes('.')) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Lost & Found QR stickers
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: s3-site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !Sub '${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          TargetOriginId: s3-site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt UrlRewriteFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: 'v1/*'
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            AllowedMethods: [GET, HEAD, OPTIONS, POST]
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+Outputs:
+  SiteURL:
+    Description: CloudFront URL for the finder page
+    Value: !Sub 'https://${Distribution.DomainName}'
+  ApiEndpoint:
+    Description: Direct API Gateway endpoint (also reachable via CloudFront /v1/*)
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  SiteBucketName:
+    Description: S3 bucket for static assets (deploy frontend/ here)
+    Value: !Ref SiteBucket
+  ItemsTableName:
+    Description: DynamoDB items table
+    Value: !Ref ItemsTable
+  SenderEmailIdentity:
+    Description: SES identity to verify before notifications work
+    Value: !Ref SenderEmailIdentity

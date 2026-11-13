@@ -1,0 +1,20 @@
+{
+  "name": "lost-found-qr",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lost & Found QR sticker platform: SAM serverless backend, static finder page, QR generation and seeding scripts.",
+  "scripts": {
+    "test": "node test/run-tests.mjs",
+    "mock": "node scripts/mock-server.mjs",
+    "qr": "node scripts/generate-qr.mjs",
+    "seed": "node scripts/seed-items.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "qrcode": "^1.5.4"
+  }
+}
