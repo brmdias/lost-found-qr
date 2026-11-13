@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>You found something!</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --text: #1a1d21;
+    --muted: #5c6570;
+    --accent: #0b6bcb;
+    --accent-text: #ffffff;
+    --error: #b3261e;
+    --success: #1b7f3b;
+    --border: #d6dbe1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121417;
+      --surface: #1d2024;
+      --text: #e8eaed;
+      --muted: #9aa3ad;
+      --accent: #6db2f7;
+      --accent-text: #0b2540;
+      --error: #f2b8b5;
+      --success: #7fd699;
+      --border: #3a4048;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  main {
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 20px;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 8px; }
+  p { margin: 0 0 16px; }
+  .muted { color: var(--muted); font-size: 0.95rem; }
+  .item-label {
+    font-weight: 600;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  label {
+    display: block;
+    font-weight: 600;
+    margin: 16px 0 6px;
+  }
+  label .optional { color: var(--muted); font-weight: 400; }
+  input, textarea {
+    width: 100%;
+    min-height: 48px;
+    padding: 12px 14px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  textarea { min-height: 120px; resize: vertical; }
+  input:focus, textarea:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+  }
+  button {
+    width: 100%;
+    min-height: 52px;
+    margin-top: 20px;
+    padding: 12px 16px;
+    font: inherit;
+    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: var(--error); font-weight: 500; margin-top: 12px; }
+  .success-icon { font-size: 2.5rem; margin-bottom: 8px; }
+  .success h1 { color: var(--success); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="view-loading" class="card" aria-live="polite">
+    <p class="muted">Loading&hellip;</p>
+  </section>
+
+  <section id="view-item" class="card" hidden>
+    <h1>You found something!</h1>
+    <p class="muted">Leave a message for the owner. Your details are shared only with them.</p>
+    <p id="item-label" class="item-label" hidden></p>
+    <form id="report-form" novalidate>
+      <label for="finder_name">Name <span class="optional">(optional)</span></label>
+      <input id="finder_name" name="finder_name" type="text" maxlength="100" autocomplete="name">
+
+      <label for="finder_contact">Email or phone</label>
+      <input id="finder_contact" name="finder_contact" type="text" inputmode="email" autocomplete="email" required>
+
+      <label for="message">Message</label>
+      <textarea id="message" name="message" rows="5" minlength="10" maxlength="1000" required
+        placeholder="Where did you find it? How can the owner reach you?"></textarea>
+
+      <button type="submit" id="submit-btn">Send message</button>
+      <p id="form-error" class="error" role="alert" hidden></p>
+    </form>
+  </section>
+
+  <section id="view-success" class="card success" hidden>
+    <div class="success-icon" aria-hidden="true">&#10003;</div>
+    <h1>Message sent</h1>
+    <p>The owner will get back to you if they wish. Thank you for taking the time!</p>
+  </section>
+
+  <section id="view-notfound" class="card" hidden>
+    <h1>Nothing here</h1>
+    <p>This item is not registered, or the sticker is no longer active. If you believe this is a mistake, double-check the code you scanned.</p>
+  </section>
+
+  <section id="view-landing" class="card" hidden>
+    <h1>Lost &amp; Found stickers</h1>
+    <p class="muted">Stick a QR code on anything you carry. If it gets lost, whoever finds it can reach you with one scan &mdash; without ever seeing your name, email, or phone number.</p>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+  var PHONE_RE = /^\+?[0-9][0-9\s().-]{6,19}$/;
+  var ITEM_ID_RE = /^[A-Za-z0-9_-]{4,32}$/;
+
+  var views = ['view-loading', 'view-item', 'view-success', 'view-notfound', 'view-landing'];
+
+  function show(id) {
+    views.forEach(function (v) {
+      document.getElementById(v).hidden = v !== id;
+    });
+  }
+
+  function showError(msg) {
+    var el = document.getElementById('form-error');
+    el.textContent = msg;
+    el.hidden = false;
+  }
+
+  function clearError() {
+    var el = document.getElementById('form-error');
+    el.textContent = '';
+    el.hidden = true;
+  }
+
+  function isValidContact(value) {
+    return EMAIL_RE.test(value) || PHONE_RE.test(value);
+  }
+
+  function loadItem(id) {
+    fetch('/v1/item/' + encodeURIComponent(id), { headers: { accept: 'application/json' } })
+      .then(function (res) {
+        if (res.status === 404) {
+          show('view-notfound');
+          return null;
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        var labelEl = document.getElementById('item-label');
+        if (data.item_label) {
+          labelEl.textContent = 'Item: ' + data.item_label;
+          labelEl.hidden = false;
+        }
+        show('view-item');
+      })
+      .catch(function () {
+        show('view-notfound');
+      });
+  }
+
+  function submitReport(id) {
+    var form = document.getElementById('report-form');
+    var btn = document.getElementById('submit-btn');
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      clearError();
+
+      var name = document.getElementById('finder_name').value.trim();
+      var contact = document.getElementById('finder_contact').value.trim();
+      var message = document.getElementById('message').value.trim();
+
+      if (!isValidContact(contact)) {
+        showError('Please enter a valid email address or phone number.');
+        return;
+      }
+      if (message.length < 10) {
+        showError('Please write at least 10 characters so the owner knows where to find their item.');
+        return;
+      }
+      if (message.length > 1000) {
+        showError('Message is too long (max 1000 characters).');
+        return;
+      }
+
+      btn.disabled = true;
+      fetch('/v1/report', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          item_id: id,
+          finder_name: name,
+          finder_contact: contact,
+          message: message,
+        }),
+      })
+        .then(function (res) {
+          if (res.status === 200) {
+            show('view-success');
+            return;
+          }
+          if (res.status === 429) {
+            throw new Error('Too many messages sent from this device. Please try again later.');
+          }
+          throw new Error('Could not send your message. Please check your connection and try again.');
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          showError(err && err.message ? err.message : 'Could not send your message. Please try again.');
+        });
+    });
+  }
+
+  var match = location.pathname.match(/^\/item\/([A-Za-z0-9_-]{4,32})\/?$/);
+  if (match) {
+    loadItem(match[1]);
+    submitReport(match[1]);
+  } else if (location.pathname === '/' || location.pathname === '/index.html') {
+    show('view-landing');
+  } else {
+    show('view-notfound');
+  }
+})();
+</script>
+</body>
+</html>

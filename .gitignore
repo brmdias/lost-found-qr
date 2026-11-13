@@ -1,0 +1,7 @@
+node_modules/
+.aws-sam/
+samconfig.toml
+stickers/
+items.csv
+*.log
+.DS_Store
