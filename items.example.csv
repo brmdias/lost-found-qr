@@ -1,0 +1,4 @@
+item_id,item_label,owner_email,owner_phone,notify_email,notify_sms
+ABC123,Blue water bottle,owner@example.com,,true,false
+XYZ789,Laptop charger,owner@example.com,,true,false
+KEY042,House keys,owner@example.com,,true,false
